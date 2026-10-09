@@ -1,0 +1,242 @@
+package crawl
+
+import (
+	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/neokou/easyfund/internal/config"
+	"github.com/neokou/easyfund/internal/crawler"
+	"github.com/neokou/easyfund/internal/model"
+	"github.com/neokou/easyfund/internal/store"
+)
+
+// Result crawl 运行摘要。
+type Result struct {
+	TradeDate string
+	Total     int
+	OK        int
+	Failed    int
+	Changed   int // 与前一交易日相比有变动的基金数
+	Duration  time.Duration
+}
+
+// Run 抓取流水线:
+//
+//	① 批量接口(3 请求) → ② ETF 行情+净值 → ③ 组装快照+校验
+//	④ 轮换抽验 2 只基金主页交叉验证 → ⑤ 入库(UPSERT) → ⑥ 与前一日 diff
+//
+// 日均请求 ≈ 3+2+1+len(ETF) ≈ 18 次, 全部串行+间隔, 对源站友好。
+func Run(cfg *config.Config, st *store.Store, log *slog.Logger) (*Result, error) {
+	started := time.Now()
+	res := &Result{Total: len(cfg.Funds)}
+
+	// ① 主源: 全市场申购状态
+	sgzt, err := crawler.FetchSgzt()
+	if err != nil {
+		return nil, fmt.Errorf("主源失败: %w", err)
+	}
+	log.Info("主源拉取完成", "record", sgzt.Record, "fetched", sgzt.Fetched, "show_day", sgzt.ShowDay)
+	res.TradeDate = sgzt.ShowDay
+	if res.TradeDate == "" {
+		res.TradeDate = time.Now().Format("2006-01-02")
+	}
+
+	// ② ETF 行情 + 净值 → 溢价
+	quotes, err := crawler.FetchQuotes(uniqueEtfs(cfg.Funds))
+	if err != nil {
+		log.Warn("ETF 行情获取失败, 本次溢价字段留空", "err", err)
+	} else {
+		log.Info("ETF 行情完成", "count", len(quotes))
+	}
+	quoteByCode := map[string]*crawler.Quote{}
+	for _, q := range quotes {
+		quoteByCode[q.Code] = q
+	}
+
+	// ③ 组装快照 + 字段校验
+	var snaps []model.Snapshot
+	var warnings []string
+	for _, f := range cfg.Funds {
+		row, ok := sgzt.Rows[f.Code]
+		if !ok {
+			res.Failed++
+			warnings = append(warnings, fmt.Sprintf("%s %s: 未在批量接口命中", f.Code, f.Name))
+			continue
+		}
+		snap, warns := buildSnapshot(f, row, res.TradeDate, quoteByCode)
+		snaps = append(snaps, snap)
+		res.OK++
+		warnings = append(warnings, warns...)
+	}
+	for _, w := range warnings {
+		log.Warn("数据告警", "detail", w)
+	}
+
+	// ④ 交叉验证: 按天轮换抽验 N 只基金主页
+	crossCheck(cfg, sgzt.Rows, log)
+
+	// ⑤ 入库
+	if err := st.UpsertFunds(cfg.Funds); err != nil {
+		return nil, fmt.Errorf("fund 表写入失败: %w", err)
+	}
+	if err := st.UpsertSnapshots(snaps); err != nil {
+		return nil, fmt.Errorf("snapshot 表写入失败: %w", err)
+	}
+
+	// ⑥ 与前一交易日 diff(第 5 周把日志换成邮件)
+	prev, err := st.PrevSnapshots(res.TradeDate)
+	if err != nil {
+		log.Warn("历史快照读取失败, 跳过 diff", "err", err)
+	}
+	if prev == nil {
+		log.Info("首次入库, 无历史可对比", "date", res.TradeDate, "rows", len(snaps))
+	} else {
+		for i := range snaps {
+			cur := snaps[i]
+			if p, ok := prev[cur.Code]; ok {
+				if msgs := diffSnapshot(&p, &cur); len(msgs) > 0 {
+					res.Changed++
+					log.Info("限购变动", "code", cur.Code, "name", cfg.NameOf(cur.Code),
+						"change", strings.Join(msgs, "; "))
+				}
+			}
+		}
+	}
+
+	res.Duration = time.Since(started).Round(time.Millisecond)
+	log.Info("crawl 完成",
+		"trade_date", res.TradeDate, "total", res.Total, "ok", res.OK,
+		"failed", res.Failed, "changed", res.Changed, "duration", res.Duration.String())
+	return res, nil
+}
+
+// buildSnapshot 批量接口行 → 快照; 返回校验告警。
+func buildSnapshot(f model.Fund, row crawler.SgztRow, tradeDate string, quotes map[string]*crawler.Quote) (model.Snapshot, []string) {
+	var warns []string
+	sn := model.Snapshot{
+		Code:           f.Code,
+		TradeDate:      tradeDate,
+		StatusRaw:      row.PurchaseStatus,
+		NavDate:        row.NavDate,
+		EtfCode:        f.EtfCode,
+		FetchedAt:      model.NowRFC3339(),
+		PurchaseStatus: model.NormalizeStatus(row.PurchaseStatus),
+	}
+	if sn.PurchaseStatus == model.StatusUnknown {
+		warns = append(warns, fmt.Sprintf("%s %s: 未知状态词 %q", f.Code, f.Name, row.PurchaseStatus))
+	}
+	// 限额: 原始数字; >=1e8 视为无限额(nil), 0(暂停时)也不适用(nil)
+	if v, err := strconv.ParseFloat(row.PurchaseLimit, 64); err == nil && v > 0 && v < 1e8 {
+		sn.DailyLimit = &v
+	}
+	if v, err := strconv.ParseFloat(row.MinBuy, 64); err == nil && v > 0 {
+		sn.MinBuy = &v
+	}
+	// 折后费率: 接口给百分数("0.12%"), 库里存小数; C 类 0.00% 合法
+	if s := strings.TrimSuffix(row.Fee, "%"); s != "" {
+		if v, err := strconv.ParseFloat(s, 64); err == nil {
+			if v >= 0 && v <= 15 {
+				fv := v / 100
+				sn.PurchaseFee = &fv
+			} else {
+				warns = append(warns, fmt.Sprintf("%s %s: 费率超出合理范围 %q", f.Code, f.Name, row.Fee))
+			}
+		}
+	}
+	if v, err := strconv.ParseFloat(row.Nav, 64); err == nil && v > 0 {
+		sn.Nav = &v
+	}
+	if f.EtfCode != "" {
+		if q, ok := quotes[f.EtfCode]; ok {
+			if q.Price > 0 {
+				p := q.Price
+				sn.EtfPrice = &p
+			}
+			if q.HasPremium {
+				pv := q.PremiumPct / 100
+				sn.EtfPremium = &pv
+			}
+		}
+	}
+	return sn, warns
+}
+
+// crossCheck 按一年中的第几天轮换抽验, 保证每个基金周期性被人工级数据核对。
+func crossCheck(cfg *config.Config, rows map[string]crawler.SgztRow, log *slog.Logger) {
+	n := len(cfg.Funds)
+	if n == 0 {
+		return
+	}
+	yday := time.Now().YearDay()
+	for i := 0; i < cfg.CrossCheckPerDay && i < n; i++ {
+		f := cfg.Funds[(yday+i)%n]
+		page, err := crawler.FetchFundPage(f.Code)
+		if err != nil {
+			log.Warn("交叉验证抓取失败", "code", f.Code, "err", err)
+			continue
+		}
+		row, ok := rows[f.Code]
+		if !ok {
+			continue
+		}
+		word := model.StatusWord[page.Status]
+		if word == "" || strings.Contains(row.PurchaseStatus, word) {
+			log.Info("交叉验证一致", "code", f.Code, "batch", row.PurchaseStatus, "page", page.StatusRaw)
+		} else {
+			log.Warn("交叉验证不一致, 疑似数据异常", "code", f.Code, "batch", row.PurchaseStatus, "page", page.StatusRaw)
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
+// diffSnapshot 两日快照对比, 返回人类可读的变动描述。
+func diffSnapshot(prev, cur *model.Snapshot) []string {
+	var msgs []string
+	if prev.PurchaseStatus != cur.PurchaseStatus {
+		msgs = append(msgs, fmt.Sprintf("状态 %s(%s)→%s(%s)",
+			prev.PurchaseStatus, prev.StatusRaw, cur.PurchaseStatus, cur.StatusRaw))
+	}
+	if !sameFloatPtr(prev.DailyLimit, cur.DailyLimit) {
+		msgs = append(msgs, fmt.Sprintf("限额 %s→%s", limitText(prev.DailyLimit), limitText(cur.DailyLimit)))
+	}
+	if !sameFloatPtr(prev.PurchaseFee, cur.PurchaseFee) {
+		msgs = append(msgs, fmt.Sprintf("费率 %s→%s", feeText(prev.PurchaseFee), feeText(cur.PurchaseFee)))
+	}
+	return msgs
+}
+
+func sameFloatPtr(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func limitText(p *float64) string {
+	if p == nil {
+		return "无限额/不适用"
+	}
+	return fmt.Sprintf("%.0f元", *p)
+}
+
+func feeText(p *float64) string {
+	if p == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.2f%%", *p*100)
+}
+
+func uniqueEtfs(funds []model.Fund) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range funds {
+		if f.EtfCode != "" && !seen[f.EtfCode] {
+			seen[f.EtfCode] = true
+			out = append(out, f.EtfCode)
+		}
+	}
+	return out
+}
