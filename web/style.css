@@ -1,0 +1,81 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #f6f7f9;
+  color: #1f2329;
+  line-height: 1.5;
+  padding-bottom: 48px;
+}
+
+header {
+  padding: 20px 16px 12px;
+  background: #fff;
+  border-bottom: 1px solid #e5e6eb;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+header h1 { font-size: 18px; }
+header p { font-size: 13px; color: #86909c; margin-top: 2px; }
+
+.group { margin: 16px 12px 0; }
+.group h2 { font-size: 15px; margin-bottom: 8px; }
+.group h2 small { color: #86909c; font-weight: normal; margin-left: 4px; }
+
+.table-wrap { overflow-x: auto; background: #fff; border-radius: 8px; border: 1px solid #e5e6eb; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap; }
+th, td { padding: 9px 12px; text-align: left; }
+th { color: #86909c; font-weight: normal; border-bottom: 1px solid #e5e6eb; }
+tbody tr + tr { border-top: 1px solid #f2f3f5; }
+td.code { color: #86909c; font-variant-numeric: tabular-nums; }
+
+.st { padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+.st-open      { background: #e8f7ee; color: #0c8a43; }
+.st-limited   { background: #fff7e6; color: #b25d09; }
+.st-suspended { background: #ffece8; color: #cb2e3a; }
+.st-listed    { background: #e8f3ff; color: #1d6fd1; }
+.st-closed, .st-raising, .st-unknown { background: #f2f3f5; color: #86909c; }
+
+.tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: #f2f3f5;
+  color: #86909c;
+  font-size: 11px;
+  line-height: 16px;
+  vertical-align: 1px;
+}
+
+#toggle-pool {
+  margin-top: 8px;
+  padding: 4px 14px;
+  border: 1px solid #d9dce1;
+  border-radius: 14px;
+  background: #fff;
+  color: #4e5969;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pm-high { color: #cb2e3a; font-weight: 600; }
+.pm-mid  { color: #b25d09; }
+.pm-flat { color: #1f2329; }
+.pm-neg  { color: #0c8a43; }
+.na { color: #c9cdd4; }
+
+footer {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  background: #fff;
+  border-top: 1px solid #e5e6eb;
+  padding: 8px 14px;
+}
+footer p { font-size: 11px; color: #86909c; line-height: 1.4; }
+
+@media (min-width: 768px) {
+  .group { margin: 20px auto 0; max-width: 900px; }
+  header { text-align: center; }
+}

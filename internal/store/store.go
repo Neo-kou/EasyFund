@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,7 +46,9 @@ CREATE TABLE IF NOT EXISTS fund (
   name       TEXT NOT NULL,
   index_name TEXT NOT NULL,
   share      TEXT NOT NULL DEFAULT '',
-  etf_code   TEXT NOT NULL DEFAULT ''
+  etf_code   TEXT NOT NULL DEFAULT '',
+  tags       TEXT NOT NULL DEFAULT '[]',
+  is_core    INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS snapshot (
   code            TEXT NOT NULL,
@@ -65,21 +68,61 @@ CREATE TABLE IF NOT EXISTS snapshot (
 );
 CREATE INDEX IF NOT EXISTS idx_snapshot_date ON snapshot(trade_date);
 `
-	_, err := s.db.Exec(ddl)
-	return err
+	if _, err := s.db.Exec(ddl); err != nil {
+		return err
+	}
+	// 老库补列(2026-10-10 扩容加列)
+	return s.ensureFundColumns()
 }
 
-// UpsertFunds config 基金池 → fund 表(运行时副本, 每次 crawl 刷新)。
+func (s *Store) ensureFundColumns() error {
+	var cols []string
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info('fund')`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return err
+		}
+		cols = append(cols, c)
+	}
+	has := func(want string) bool {
+		for _, c := range cols {
+			if c == want {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("tags") {
+		if _, err := s.db.Exec(`ALTER TABLE fund ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			return err
+		}
+	}
+	if !has("is_core") {
+		if _, err := s.db.Exec(`ALTER TABLE fund ADD COLUMN is_core INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UpsertFunds 基金池(核心+自动扩容) → fund 表(运行时副本, 每次 crawl 刷新)。
 func (s *Store) UpsertFunds(funds []model.Fund) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	const q = `INSERT INTO fund(code,name,index_name,share,etf_code) VALUES(?,?,?,?,?)
-ON CONFLICT(code) DO UPDATE SET name=excluded.name, index_name=excluded.index_name, share=excluded.share, etf_code=excluded.etf_code`
+	const q = `INSERT INTO fund(code,name,index_name,share,etf_code,tags,is_core) VALUES(?,?,?,?,?,?,?)
+ON CONFLICT(code) DO UPDATE SET name=excluded.name, index_name=excluded.index_name, share=excluded.share,
+  etf_code=excluded.etf_code, tags=excluded.tags, is_core=excluded.is_core`
 	for _, f := range funds {
-		if _, err := tx.Exec(q, f.Code, f.Name, f.Index, f.Share, f.EtfCode); err != nil {
+		tags, _ := json.Marshal(f.Tags)
+		if _, err := tx.Exec(q, f.Code, f.Name, f.Index, f.Share, f.EtfCode, string(tags), f.IsCore); err != nil {
 			return fmt.Errorf("fund %s: %w", f.Code, err)
 		}
 	}
@@ -112,6 +155,26 @@ ON CONFLICT(code,trade_date) DO UPDATE SET
 		}
 	}
 	return tx.Commit()
+}
+
+// Funds fund 表全量, code→Fund(serve 组装响应用)。
+func (s *Store) Funds() (map[string]model.Fund, error) {
+	rows, err := s.db.Query(`SELECT code,name,index_name,share,etf_code,tags,is_core FROM fund`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]model.Fund{}
+	for rows.Next() {
+		var f model.Fund
+		var tags string
+		if err := rows.Scan(&f.Code, &f.Name, &f.Index, &f.Share, &f.EtfCode, &tags, &f.IsCore); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(tags), &f.Tags)
+		out[f.Code] = f
+	}
+	return out, rows.Err()
 }
 
 // PrevSnapshots trade_date 严格早于 curDate 的最近一个交易日的全量快照; 无历史时返回 nil。

@@ -94,25 +94,29 @@ func FetchQuotes(etfCodes []string) ([]*Quote, error) {
 }
 
 // fetchEtfNav 从 pingzhongdata 的净值走势数组取末点 = 最新单位净值。
-func fetchEtfNav(code string) (nav, navDate string, err error) {
+func fetchEtfNav(code string) (nav float64, navDate string, err error) {
 	body, err := FetchRaw("https://fund.eastmoney.com/pingzhongdata/" + code + ".js")
 	if err != nil {
-		return "", "", err
+		return 0, "", err
 	}
 	arr := reNetWorthArr.FindSubmatch(body)
 	if arr == nil {
-		return "", "", fmt.Errorf("未找到 Data_netWorthTrend")
+		return 0, "", fmt.Errorf("未找到 Data_netWorthTrend")
 	}
 	pts := reNavPoint.FindAllSubmatch(arr[1], -1)
 	if len(pts) == 0 {
-		return "", "", fmt.Errorf("净值走势数组为空")
+		return 0, "", fmt.Errorf("净值走势数组为空")
 	}
 	last := pts[len(pts)-1]
 	ms, err := strconv.ParseInt(string(last[1]), 10, 64)
 	if err != nil {
-		return "", "", err
+		return 0, "", err
 	}
-	return string(last[2]), time.UnixMilli(ms).Format("2006-01-02"), nil
+	nav, err = strconv.ParseFloat(string(last[2]), 64)
+	if err != nil {
+		return 0, "", fmt.Errorf("净值解析失败 %q: %w", last[2], err)
+	}
+	return nav, time.UnixMilli(ms).Format("2006-01-02"), nil
 }
 
 // etfSymbol 场内代码→交易所前缀: 5 开头沪市(513500), 其余按深市(159632)。

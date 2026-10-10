@@ -2,13 +2,15 @@ package model
 
 import "time"
 
-// Fund 监控池里的基金(config.yaml 为唯一事实源, fund 表是运行时副本)。
+// Fund 监控池里的基金(config.yaml 核心池为事实源; 自动扩容池由批量接口按类型过滤生成)。
 type Fund struct {
-	Code    string `yaml:"code" json:"code"`
-	Name    string `yaml:"name" json:"name"`
-	Index   string `yaml:"index" json:"index"`
-	Share   string `yaml:"share" json:"share"`     // A / C / LOF
-	EtfCode string `yaml:"etf_code" json:"etf_code"` // 同指数场内 ETF, 空串=无
+	Code    string   `yaml:"code" json:"code"`
+	Name    string   `yaml:"name" json:"name"`
+	Index   string   `yaml:"index" json:"index"`
+	Share   string   `yaml:"share" json:"share"`     // A / C / LOF
+	EtfCode string   `yaml:"etf_code" json:"etf_code"` // 同指数场内 ETF, 空串=无
+	Tags    []string `yaml:"-" json:"tags"`      // 公司/指数/份额/类型/特征标签(tag 包推导)
+	IsCore  bool     `yaml:"-" json:"is_core"`   // true=config.yaml 核心池(etf 映射已核实); false=自动扩入
 }
 
 // Status 申购状态归一化枚举。
@@ -19,6 +21,8 @@ const (
 	StatusLimited   Status = "limited"
 	StatusSuspended Status = "suspended"
 	StatusClosed    Status = "closed"
+	StatusListed    Status = "listed"  // 场内交易(ETF 本身)
+	StatusRaising   Status = "raising" // 认购期(新基金募集)
 	StatusUnknown   Status = "unknown"
 )
 
@@ -28,6 +32,8 @@ var StatusWord = map[Status]string{
 	StatusLimited:   "限大额",
 	StatusSuspended: "暂停申购",
 	StatusClosed:    "封闭期",
+	StatusListed:    "场内交易",
+	StatusRaising:   "认购期",
 }
 
 // NormalizeStatus 把接口状态原文归一化; 未知词返回 unknown(由调用方告警)。

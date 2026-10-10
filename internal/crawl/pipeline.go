@@ -3,6 +3,7 @@ package crawl
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -10,17 +11,20 @@ import (
 	"github.com/neokou/easyfund/internal/config"
 	"github.com/neokou/easyfund/internal/crawler"
 	"github.com/neokou/easyfund/internal/model"
+	"github.com/neokou/easyfund/internal/notify"
 	"github.com/neokou/easyfund/internal/store"
+	"github.com/neokou/easyfund/internal/tag"
 )
 
 // Result crawl 运行摘要。
 type Result struct {
-	TradeDate string
-	Total     int
-	OK        int
-	Failed    int
-	Changed   int // 与前一交易日相比有变动的基金数
-	Duration  time.Duration
+	TradeDate     string
+	Total         int
+	OK            int
+	Failed        int
+	Changed       int // 与前一交易日相比有变动的基金数
+	CrossMismatch int // 交叉验证不一致数(>=2 触发告警邮件, 技术方案 §5)
+	Duration      time.Duration
 }
 
 // Run 抓取流水线:
@@ -29,7 +33,7 @@ type Result struct {
 //	④ 轮换抽验 2 只基金主页交叉验证 → ⑤ 入库(UPSERT) → ⑥ 与前一日 diff
 //
 // 日均请求 ≈ 3+2+1+len(ETF) ≈ 18 次, 全部串行+间隔, 对源站友好。
-func Run(cfg *config.Config, st *store.Store, log *slog.Logger) (*Result, error) {
+func Run(cfg *config.Config, st *store.Store, log *slog.Logger, alerter *notify.Sender) (*Result, error) {
 	started := time.Now()
 	res := &Result{Total: len(cfg.Funds)}
 
@@ -43,6 +47,15 @@ func Run(cfg *config.Config, st *store.Store, log *slog.Logger) (*Result, error)
 	if res.TradeDate == "" {
 		res.TradeDate = time.Now().Format("2006-01-02")
 	}
+
+	// 基金池 = config 核心池 + 自动扩容池(QDII+海外指数, 2026-10-10 决策)
+	pool := expandPool(cfg, sgzt.Rows)
+	res.Total = len(pool)
+	nameByCode := map[string]string{}
+	for _, f := range pool {
+		nameByCode[f.Code] = f.Name
+	}
+	log.Info("基金池就绪", "total", res.Total, "core", len(cfg.Funds))
 
 	// ② ETF 行情 + 净值 → 溢价
 	quotes, err := crawler.FetchQuotes(uniqueEtfs(cfg.Funds))
@@ -59,7 +72,7 @@ func Run(cfg *config.Config, st *store.Store, log *slog.Logger) (*Result, error)
 	// ③ 组装快照 + 字段校验
 	var snaps []model.Snapshot
 	var warnings []string
-	for _, f := range cfg.Funds {
+	for _, f := range pool {
 		row, ok := sgzt.Rows[f.Code]
 		if !ok {
 			res.Failed++
@@ -75,11 +88,19 @@ func Run(cfg *config.Config, st *store.Store, log *slog.Logger) (*Result, error)
 		log.Warn("数据告警", "detail", w)
 	}
 
-	// ④ 交叉验证: 按天轮换抽验 N 只基金主页
-	crossCheck(cfg, sgzt.Rows, log)
+	// ④ 交叉验证: 按天轮换抽验 N 只基金主页; 不一致 >=2 触发告警邮件(§5)
+	checked, mismatched, detail := crossCheck(cfg, sgzt.Rows, log)
+	res.CrossMismatch = mismatched
+	if mismatched >= 2 && alerter != nil {
+		body := fmt.Sprintf("日期: %s\n抽验 %d 只, 不一致 %d 只:\n%s\n\n请登录服务器核对源站数据。",
+			res.TradeDate, checked, mismatched, strings.Join(detail, "\n"))
+		if err := alerter.Send("【EasyFund】数据异常: 交叉验证不一致", body); err != nil {
+			log.Error("告警邮件发送失败", "err", err)
+		}
+	}
 
 	// ⑤ 入库
-	if err := st.UpsertFunds(cfg.Funds); err != nil {
+	if err := st.UpsertFunds(pool); err != nil {
 		return nil, fmt.Errorf("fund 表写入失败: %w", err)
 	}
 	if err := st.UpsertSnapshots(snaps); err != nil {
@@ -99,7 +120,7 @@ func Run(cfg *config.Config, st *store.Store, log *slog.Logger) (*Result, error)
 			if p, ok := prev[cur.Code]; ok {
 				if msgs := diffSnapshot(&p, &cur); len(msgs) > 0 {
 					res.Changed++
-					log.Info("限购变动", "code", cur.Code, "name", cfg.NameOf(cur.Code),
+					log.Info("限购变动", "code", cur.Code, "name", nameByCode[cur.Code],
 						"change", strings.Join(msgs, "; "))
 				}
 			}
@@ -165,10 +186,11 @@ func buildSnapshot(f model.Fund, row crawler.SgztRow, tradeDate string, quotes m
 }
 
 // crossCheck 按一年中的第几天轮换抽验, 保证每个基金周期性被人工级数据核对。
-func crossCheck(cfg *config.Config, rows map[string]crawler.SgztRow, log *slog.Logger) {
+// 返回 抽验数/不一致数/不一致明细(告警邮件正文用)。
+func crossCheck(cfg *config.Config, rows map[string]crawler.SgztRow, log *slog.Logger) (checked, mismatched int, detail []string) {
 	n := len(cfg.Funds)
 	if n == 0 {
-		return
+		return 0, 0, nil
 	}
 	yday := time.Now().YearDay()
 	for i := 0; i < cfg.CrossCheckPerDay && i < n; i++ {
@@ -182,14 +204,18 @@ func crossCheck(cfg *config.Config, rows map[string]crawler.SgztRow, log *slog.L
 		if !ok {
 			continue
 		}
+		checked++
 		word := model.StatusWord[page.Status]
 		if word == "" || strings.Contains(row.PurchaseStatus, word) {
 			log.Info("交叉验证一致", "code", f.Code, "batch", row.PurchaseStatus, "page", page.StatusRaw)
 		} else {
+			mismatched++
+			detail = append(detail, fmt.Sprintf("%s %s: 批量=%q 主页=%q", f.Code, f.Name, row.PurchaseStatus, page.StatusRaw))
 			log.Warn("交叉验证不一致, 疑似数据异常", "code", f.Code, "batch", row.PurchaseStatus, "page", page.StatusRaw)
 		}
 		time.Sleep(1 * time.Second)
 	}
+	return checked, mismatched, detail
 }
 
 // diffSnapshot 两日快照对比, 返回人类可读的变动描述。
@@ -239,4 +265,50 @@ func uniqueEtfs(funds []model.Fund) []string {
 		}
 	}
 	return out
+}
+
+// expandPool 合并基金池: config 核心池(字段以人工核实为准) + 自动扩容池。
+// 扩容口径(2026-10-10 实测): 接口类型含 "QDII" 或为 "指数型-海外股票", 约 738 只;
+// 自动池 etf_code 留空(不逐只取净值, 守住爬虫礼仪), 溢价仅核心池有。
+func expandPool(cfg *config.Config, rows map[string]crawler.SgztRow) []model.Fund {
+	core := map[string]bool{}
+	pool := make([]model.Fund, 0, len(rows))
+	for _, f := range cfg.Funds {
+		f.IsCore = true
+		r := rows[f.Code]
+		f.Tags = tag.Derive(f.Name, r.Type, r.PurchaseStatus)
+		pool = append(pool, f)
+		core[f.Code] = true
+	}
+	for code, r := range rows {
+		if core[code] || !inScope(r.Type) {
+			continue
+		}
+		pool = append(pool, model.Fund{
+			Code:  code,
+			Name:  r.Name,
+			Index: tag.Index(r.Name),
+			Share: firstShare(tag.Shares(r.Name)),
+			Tags:  tag.Derive(r.Name, r.Type, r.PurchaseStatus),
+		})
+	}
+	sort.Slice(pool, func(i, j int) bool { return pool[i].Code < pool[j].Code })
+	return pool
+}
+
+func inScope(apiType string) bool {
+	return strings.Contains(apiType, "QDII") || apiType == "指数型-海外股票"
+}
+
+func firstShare(shares []string) string {
+	// 份额字段优先 A/C/E 字母, 其次美元/LOF 形态
+	for _, s := range shares {
+		if len(s) == 1 {
+			return s
+		}
+	}
+	if len(shares) > 0 {
+		return shares[0]
+	}
+	return ""
 }

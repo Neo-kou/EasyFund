@@ -2,6 +2,11 @@
 # 基金池: 2026-10-09 定稿, 纳指100×11家 + 标普500×7家 + 纳指科技/标普信息科技×2家, A/C 份额共 39 只
 # etf_code: 同基金公司同指数的场内 ETF(来自基金主页"查看相关ETF"链接, 2026-10-09 程序化核对);
 #           留空 = 该基金无场内孪生(LOF/FOF/无联接), 溢价列显示 "-"
+#
+# ★ 本文件只是"核心池"(is_core=1)。完整监控池 = 核心池 + 自动扩容池, 由 crawl 每次运行时用
+#   批量接口的类型字段规则推导(类型含 QDII 或为"指数型-海外股票", 2026-10-10 实测约 738 只),
+#   不写进本文件: 新发行基金自动进、清盘基金自动出, 单一事实源是接口本身。
+#   见 internal/crawl/pipeline.go expandPool 与交接文档。
 
 server:
   addr: ":8080"
@@ -11,7 +16,8 @@ db_path: data/easyfund.db
 # 每日轮换抽验的基金主页数量(交叉验证主源)
 cross_check_per_day: 2
 
-# SMTP 告警(第 1 周末接入, 目前留空不影响 crawl)
+# SMTP 告警。本文件受 git 跟踪, 不放真实授权码; 生产配置在 config.prod.yaml(已 gitignore),
+# 日常 crawl/serve/notify-test 用: -config config.prod.yaml
 smtp:
   host: ""
   port: 465

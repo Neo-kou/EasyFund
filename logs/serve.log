@@ -1,0 +1,24 @@
+{"time":"2026-10-10T20:09:16.404118941+08:00","level":"INFO","msg":"serve 启动","addr":":9372","db":"data/easyfund.db"}
+{"time":"2026-10-10T20:09:18.407813514+08:00","level":"INFO","msg":"http","method":"GET","path":"/","status":200,"dur":"7µs","ip":"127.0.0.1"}
+{"time":"2026-10-10T20:09:18.414294561+08:00","level":"INFO","msg":"http","method":"GET","path":"/api/qdii","status":200,"dur":"865µs","ip":"127.0.0.1"}
+{"time":"2026-10-10T20:10:59.337107146+08:00","level":"INFO","msg":"http","method":"GET","path":"/","status":200,"dur":"22µs","ip":"127.0.0.1"}
+{"time":"2026-10-10T20:10:59.389845814+08:00","level":"INFO","msg":"http","method":"GET","path":"/style.css","status":200,"dur":"2.908ms","ip":"127.0.0.1"}
+{"time":"2026-10-10T20:10:59.409613008+08:00","level":"INFO","msg":"http","method":"GET","path":"/app.js","status":200,"dur":"95µs","ip":"127.0.0.1"}
+{"time":"2026-10-10T20:10:59.416492415+08:00","level":"INFO","msg":"http","method":"GET","path":"/api/qdii","status":200,"dur":"615µs","ip":"127.0.0.1"}
+{"time":"2026-10-10T20:11:45.484288812+08:00","level":"INFO","msg":"http","method":"GET","path":"/","status":200,"dur":"30µs","ip":"172.17.96.1"}
+{"time":"2026-10-10T20:11:45.517516327+08:00","level":"INFO","msg":"http","method":"GET","path":"/style.css","status":200,"dur":"33µs","ip":"172.17.96.1"}
+{"time":"2026-10-10T20:11:45.517553366+08:00","level":"INFO","msg":"http","method":"GET","path":"/app.js","status":200,"dur":"71µs","ip":"172.17.96.1"}
+{"time":"2026-10-10T20:11:45.539576122+08:00","level":"INFO","msg":"http","method":"GET","path":"/api/qdii","status":200,"dur":"982µs","ip":"172.17.96.1"}
+{"time":"2026-10-10T20:11:45.559513908+08:00","level":"INFO","msg":"http","method":"GET","path":"/favicon.ico","status":404,"dur":"0s","ip":"172.17.96.1"}
+{"time":"2026-10-10T20:32:24.048403543+08:00","level":"INFO","msg":"serve 启动","addr":":9372","db":"data/easyfund.db"}
+{"time":"2026-10-10T20:32:26.058648075+08:00","level":"INFO","msg":"http","method":"GET","path":"/api/qdii","status":200,"dur":"10.704ms","ip":"127.0.0.1"}
+{"time":"2026-10-10T20:33:01.352743172+08:00","level":"INFO","msg":"http","method":"GET","path":"/api/qdii","status":200,"dur":"8.287ms","ip":"127.0.0.1"}
+{"time":"2026-10-10T20:36:28.449457171+08:00","level":"INFO","msg":"serve 启动","addr":":9372","db":"data/easyfund.db"}
+{"time":"2026-10-10T20:36:30.45687982+08:00","level":"INFO","msg":"http","method":"GET","path":"/api/qdii","status":200,"dur":"6.186ms","ip":"127.0.0.1"}
+{"time":"2026-10-10T20:44:59.358955786+08:00","level":"INFO","msg":"http","method":"GET","path":"/","status":200,"dur":"27µs","ip":"172.17.96.1"}
+{"time":"2026-10-10T20:44:59.401081543+08:00","level":"INFO","msg":"http","method":"GET","path":"/style.css","status":200,"dur":"3.205ms","ip":"172.17.96.1"}
+{"time":"2026-10-10T20:44:59.401390353+08:00","level":"INFO","msg":"http","method":"GET","path":"/app.js","status":200,"dur":"3.097ms","ip":"172.17.96.1"}
+{"time":"2026-10-10T20:44:59.421750192+08:00","level":"INFO","msg":"http","method":"GET","path":"/api/qdii","status":200,"dur":"8.909ms","ip":"172.17.96.1"}
+{"time":"2026-10-10T20:44:59.465284195+08:00","level":"INFO","msg":"http","method":"GET","path":"/favicon.ico","status":404,"dur":"1µs","ip":"172.17.96.1"}
+{"time":"2026-10-10T20:52:40.756445144+08:00","level":"INFO","msg":"serve 启动","addr":":9372","db":"data/easyfund.db"}
+{"time":"2026-10-10T20:52:42.765401071+08:00","level":"INFO","msg":"http","method":"GET","path":"/api/qdii","status":200,"dur":"7.793ms","ip":"127.0.0.1"}
